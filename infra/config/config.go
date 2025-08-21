@@ -21,6 +21,12 @@ type Config struct {
 		AppKey    string
 		AccessKey string
 	}
+	Comment struct {
+		Assistant string
+		Template  string
+		ApiKey    string
+		BaseURL   string
+	}
 	Consumers int
 }
 

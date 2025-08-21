@@ -80,7 +80,7 @@ func (c *Consumer) comment() bool {
 
 	var err error
 	var ok bool
-	task := call.NewCommentTask()
+	task := call.NewCommentTask(c.Entry.ID, c.Entry.Answer.Origin, c.ASRResp.Result.Text)
 	if ok, err = task.Submit(); err != nil || !ok {
 		logx.Error("[consumer] comment submit err:%s", err)
 		return ok

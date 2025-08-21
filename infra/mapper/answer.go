@@ -34,6 +34,7 @@ type (
 		AudioTime        int       `gorm:"column:audio_time" json:"audio_time"`
 		AudioContentType string    `gorm:"column:audio_content_type;size:255" json:"audio_content_type"`
 		AudioStatus      int       `gorm:"column:audio_status" json:"audio_status"`
+		Origin           string    // 原文 TODO 原文查询
 	}
 	AnswerMapper struct {
 		db *gorm.DB
