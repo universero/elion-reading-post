@@ -17,6 +17,10 @@ type Config struct {
 	DB    struct {
 		DSN string
 	}
+	ASR struct {
+		AppKey    string
+		AccessKey string
+	}
 	Consumers int
 }
 
