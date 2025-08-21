@@ -4,6 +4,7 @@ import (
 	"errors"
 	"github.com/avast/retry-go"
 	"github.com/zeromicro/go-zero/core/logx"
+	"gitlab.aiecnu.net/elion/elion-reading-post/infra/call"
 	"gitlab.aiecnu.net/elion/elion-reading-post/infra/mapper"
 	"golang.org/x/net/context"
 	"golang.org/x/sync/singleflight"
@@ -13,22 +14,25 @@ import (
 
 type (
 	ConsumeState string // 消费状态
-	// Manager 管理 Consumer的创建与销毁
+	// Manager 管理 Consumer的创建与销毁 TODO 多次失败的任务
 	Manager struct {
-		mu        sync.Mutex           // 维护manager状态
-		fetchCond *sync.Cond           // 只有一个线程实际查数据库
-		mapper    *mapper.AnswerMapper // 数据库mapper
-		cap       int                  // 消费者数量
-		consumers []*Consumer          // 消费者
-		idle      map[int]*Entry       // idle的Entry
-		consuming map[int]*Entry       // 消费中的Entry
-		cache     map[int]string       // 缓存id对应的comment
+		mu        sync.Mutex                // 维护manager状态
+		fetchCond *sync.Cond                // 只有一个线程实际查数据库
+		mapper    *mapper.AnswerMapper      // 数据库mapper
+		cap       int                       // 消费者数量
+		consumers []*Consumer               // 消费者
+		idle      map[int]*Entry            // idle的Entry
+		consuming map[int]*Entry            // 消费中的Entry
+		abandon   map[int]*Entry            // 放弃的Entry
+		cache     map[int]string            // 缓存id对应的comment
+		asr       map[int]*call.ASRTaskResp // 缓存id对应的asr结果
 		sf        singleflight.Group
 	}
 	Entry struct {
-		ID     int            // 记录ID
-		State  ConsumeState   // 记录状态
-		Answer *mapper.Answer // 记录信息
+		ID           int            // 记录ID
+		State        ConsumeState   // 记录状态
+		Answer       *mapper.Answer // 记录信息
+		AbandonTimes int            // 放弃次数
 	}
 )
 
@@ -36,9 +40,11 @@ var (
 	Idle          ConsumeState = "idle"                     // 空闲
 	Consuming     ConsumeState = "consuming"                // 消费中
 	Finished      ConsumeState = "finished"                 // 已完成
+	Abandoned     ConsumeState = "abandoned"                // 放弃
 	NeedToWait                 = errors.New("暂时无新记录, 需要等待") // 标识等待的异常
 	batch                      = 10                         // 一次取出的个数
 	fetchInterval              = 60                         // fetch间隔
+	maxAbandon                 = 5                          // 最多放弃五次
 	opts                       = []retry.Option{            // 重试策略
 		retry.Attempts(uint(5)),             // 最大重试次数
 		retry.DelayType(retry.BackOffDelay), // 指数退避策略
@@ -147,11 +153,30 @@ func (m *Manager) FinishOne(id int, comment string) (success bool, err error) {
 	success, err = m.mapper.FinishOne(context.Background(), id, comment)
 	if success { // 完成成功
 		m.RemoveCache(id) // 删除缓存
+		m.RemoveASR(id)   // 删除asr缓存
 		en.Finished(m)    // 移除任务
 		return
 	}
 	en.Idle(m) // 完成失败, 将任务重新标记为未处理
 	return
+}
+
+// Abandon 放弃一个任务
+func (m *Manager) Abandon(id int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// 判断是否处理中
+	en, ok := m.QueryConsuming(id)
+	if !ok { // consuming 中不存在, 被处理过了
+		return
+	}
+
+	if en.AbandonTimes >= maxAbandon { // 被放弃太多次了, 移入放弃中
+		en.Abandon(m)
+		return
+	}
+	en.AbandonTimes++
+	en.Idle(m)
 }
 
 // CacheOne 缓存一个id的处理结果
@@ -174,6 +199,28 @@ func (m *Manager) RemoveCache(id int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.cache, id)
+}
+
+// CacheASR 缓存一个id的ASR处理结果
+func (m *Manager) CacheASR(id int, v *call.ASRTaskResp) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.asr[id] = v
+}
+
+// QueryASR 查询这个id的结果是否有过缓存
+func (m *Manager) QueryASR(id int) (v *call.ASRTaskResp, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok = m.asr[id]
+	return
+}
+
+// RemoveASR 删除id对应asr缓存
+func (m *Manager) RemoveASR(id int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.asr, id)
 }
 
 // QueryIdle 查询一个Entry
@@ -211,8 +258,17 @@ func (e *Entry) Consuming(m *Manager) {
 	m.consuming[e.ID] = e
 }
 
-// Finished 切换Entry状态为Finish并删除
+// Finished 切换Entry状态为Finish并删除, 不需要获取锁
 func (e *Entry) Finished(m *Manager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	e.State = Finished
 	delete(m.consuming, e.ID)
+}
+
+// Abandon 切换Entry状态为Abandon, 需要先获取m的锁
+func (e *Entry) Abandon(m *Manager) {
+	e.State = Consuming
+	delete(m.consuming, e.ID)
+	m.abandon[e.ID] = e
 }
