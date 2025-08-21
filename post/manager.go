@@ -56,15 +56,20 @@ var (
 			return !errors.Is(err, NeedToWait) // 当error不为NeedToWait时才需要重试
 		}),
 	}
+	once    sync.Once
+	manager *Manager
 )
 
-// NewManager 创建管理者
-func NewManager(cap int) *Manager {
-	m := &Manager{mu: sync.Mutex{}, fetchCond: sync.NewCond(&sync.Mutex{}), cap: cap, mapper: mapper.GetAnswerMapper()}
-	for range cap {
-		m.consumers = append(m.consumers, NewConsumer(m))
-	}
-	return m
+// GetManager 创建管理者
+func GetManager(cap int) *Manager {
+	once.Do(func() {
+		m := &Manager{mu: sync.Mutex{}, fetchCond: sync.NewCond(&sync.Mutex{}), cap: cap, mapper: mapper.GetAnswerMapper()}
+		for range cap {
+			m.consumers = append(m.consumers, NewConsumer(m))
+		}
+		manager = m
+	})
+	return manager
 }
 
 // Run 启动所有的消费者
@@ -179,6 +184,17 @@ func (m *Manager) Abandon(id int) {
 	en.Idle(m)
 }
 
+func (m *Manager) Unabandon(id int) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	en, ok := m.QueryAbandon(id)
+	if !ok {
+		return "no such id entry in abandon"
+	}
+	en.Unabandon(m)
+	return "success"
+}
+
 // CacheOne 缓存一个id的处理结果
 func (m *Manager) CacheOne(id int, comment string) {
 	m.mu.Lock()
@@ -239,6 +255,14 @@ func (m *Manager) QueryConsuming(id int) (v *Entry, ok bool) {
 	return
 }
 
+// QueryAbandon 查询一个Entry
+func (m *Manager) QueryAbandon(id int) (v *Entry, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok = m.abandon[id]
+	return
+}
+
 // NewEntry 创建新的Entry
 func NewEntry(ans *mapper.Answer) *Entry {
 	return &Entry{ID: ans.ID, State: Idle, Answer: ans}
@@ -268,7 +292,15 @@ func (e *Entry) Finished(m *Manager) {
 
 // Abandon 切换Entry状态为Abandon, 需要先获取m的锁
 func (e *Entry) Abandon(m *Manager) {
-	e.State = Consuming
+	e.State = Abandoned
 	delete(m.consuming, e.ID)
 	m.abandon[e.ID] = e
+}
+
+// Unabandon 切换Entry状态为Idle, 需要先获取m的锁
+func (e *Entry) Unabandon(m *Manager) {
+	e.State = Idle
+	e.AbandonTimes = 0
+	delete(m.abandon, e.ID)
+	m.idle[e.ID] = e
 }
