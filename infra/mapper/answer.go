@@ -36,6 +36,10 @@ type (
 		AudioStatus      int       `gorm:"column:audio_status" json:"audio_status"`
 		Origin           string    // 原文 TODO 原文查询
 	}
+	FindOriginResult struct {
+		QuestionId   int    `gorm:"column:question_id"`
+		OriginalText string `gorm:"column:content"`
+	}
 	AnswerMapper struct {
 		db *gorm.DB
 	}
@@ -49,12 +53,16 @@ const (
 )
 
 var (
-	answerMapper  *AnswerMapper
-	once          sync.Once
-	UnHandledCond = &Answer{AudioStatus: UnHandled}
-	HandlingCond  = &Answer{AudioStatus: Handling}
-	HandledCond   = &Answer{AudioStatus: Handled}
-	NoOneFinished = errors.New("没有记录被更新, 可能记录不存在或已完成")
+	answerMapper      *AnswerMapper
+	once              sync.Once
+	UnHandledCond     = &Answer{AudioStatus: UnHandled}
+	HandlingCond      = &Answer{AudioStatus: Handling}
+	HandledCond       = &Answer{AudioStatus: Handled}
+	NoOneFinished     = errors.New("没有记录被更新, 可能记录不存在或已完成")
+	Question2Homework = "table_elion_reading_homework_question"
+	Homework2Reading  = "table_elion_reading_homework"
+	Reading2Text      = "table_elion_reading"
+	Text2Origin       = "table_elion_reading_text"
 )
 
 // GetAnswerMapper 获取AnswerMapper单例
@@ -89,11 +97,34 @@ func (m *AnswerMapper) ListUnHandledAnswers(ctx context.Context, size int) ([]*A
 		}
 
 		// 将获取的记录都标记为处理中
-		updates := m.db.Model(&Answer{}).Where("id IN ? AND audio_status = ?", ids, UnHandled).Updates(Handling)
+		updates := tx.WithContext(ctx).Model(&Answer{}).Where("id IN ? AND audio_status = ?", ids, UnHandled).Updates(Handling)
 		if updates.Error != nil {
 			return updates.Error
 		} else if updates.RowsAffected != int64(len(ids)) {
 			return fmt.Errorf("获取到的未处理记录标记更新中失败")
+		}
+		// 收集问题id
+		var question2origin map[string]string
+		var question []string
+		for _, answer := range answers {
+			question2origin[answer.QuestionID] = ""
+		}
+		for key := range question2origin {
+			question = append(question, key)
+		}
+		// 根据questions_id查询homework_id, 根据homework_id查询reference_reading_id, 根据reference_reading_id查询原文
+		var origins []FindOriginResult
+		if err = tx.WithContext(ctx).Table(Question2Homework).
+			Select(fmt.Sprintf("%s.question_id, %s.content", Question2Homework, Text2Origin)).
+			Joins(fmt.Sprintf("JOIN %s ON %s.homework_id = %s.homework_id", Homework2Reading, Question2Homework, Homework2Reading)).
+			Joins(fmt.Sprintf("JOIN %s ON %s.reading_id = %s.reading_id", Reading2Text, Homework2Reading, Reading2Text)).
+			Joins(fmt.Sprintf("JOIN %s ON %s.text_id = %s.text_id", Text2Origin, Reading2Text, Text2Origin)).
+			Where(fmt.Sprintf("%s.question_id IN ?", Question2Homework), question). // optimize 课外的题目可能没有文本
+			Scan(&origins).Error; err != nil {
+			return err
+		}
+		for _, answer := range answers {
+			answer.Origin = question2origin[answer.QuestionID]
 		}
 		return err
 	})
@@ -104,7 +135,7 @@ func (m *AnswerMapper) ListUnHandledAnswers(ctx context.Context, size int) ([]*A
 func (m *AnswerMapper) FinishOne(ctx context.Context, id int, comment string) (success bool, err error) {
 	err = m.db.Transaction(func(tx *gorm.DB) (err error) {
 		var ans Answer
-		first := tx.Model(&Answer{}).Where("id = ?", id).First(&ans)
+		first := tx.WithContext(ctx).Model(&Answer{}).Where("id = ?", id).First(&ans)
 		if first.Error != nil { // TODO 上游处理not found
 			logx.Error("查询id:%d失败:%s", id, first.Error.Error())
 			return err
@@ -128,4 +159,8 @@ func (m *AnswerMapper) FinishOne(ctx context.Context, id int, comment string) (s
 		return nil
 	})
 	return success, err
+}
+
+func (a Answer) TableName() string {
+	return "table_elion_reading_question_student_answer"
 }
