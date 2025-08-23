@@ -19,7 +19,7 @@ var (
 		retry.DelayType(retry.BackOffDelay), // 指数退避策略
 		retry.MaxDelay(16 * time.Second),    // 最大退避间隔
 		retry.OnRetry(func(n uint, err error) { // 重试日志
-			logx.Info("[asr file task] retry #%d times with err:%v", n+1, err)
+			logx.Infof("[asr file task] retry #%d times with err:%v", n+1, err)
 		})}
 	ASRTaskFailed = errors.New("[asr file task] task failed") // 任务失败
 	queryInterval = 3                                         // 每三秒查询一次
@@ -109,10 +109,10 @@ func (t *FileAsrTask) Submit() (bool, error) {
 	var header http.Header
 	err := retry.Do(func() (err error) {
 		if header, _, err = GetHttpClient().PostWithHeader(submitEndpoint, t.buildHeader(), t.buildSubmit()); err != nil {
-			logx.Error("[asr file task]: post err: %s", err)
+			logx.Errorf("[asr file task]: post err: %s", err)
 			return err
 		}
-		logx.Info("[asr file task]: log id: %s, status: code %s, message: %s", header.Get("X-Tt-Logid"), header.Get("X-Api-Status-Code"), header.Get("X-Api-Message"))
+		logx.Infof("[asr file task]: log id: %s, status: code %s, message: %s", header.Get("X-Tt-Logid"), header.Get("X-Api-Status-Code"), header.Get("X-Api-Message"))
 		return nil
 	}, opts...)
 	return IsASRSuccess(header.Get("X-Api-Status-Code")), err
@@ -131,17 +131,18 @@ func (t *FileAsrTask) Query() (*ASRTaskResp, error) {
 		var body map[string]any
 		if err := retry.Do(func() (err error) { // 单次请求失败重试
 			if header, body, err = GetHttpClient().PostWithHeader(queryEndpoint, query, nil); err != nil {
-				logx.Error("[asr file task] query http err: %s", err)
+				logx.Errorf("[asr file task] query http err: %s", err)
 			}
 			return err
 		}, opts...); err != nil { // 多次请求失败, 可能出现网络问题, 退出
-			logx.Error("[asr file task]: query retry too many times err: %s", err)
+			logx.Errorf("[asr file task]: query retry too many times err: %s", err)
 			return nil, err
 		}
 		code := header.Get("X-Api-Status-Code")
 		if IsASRSuccess(code) { // 成功
 			return conv2ASRTaskResp(body), nil
 		} else if !t.IsReQuery(code) { // ASR任务失败
+			logx.Errorf("[asr file task]: fail for the reason: %v", body)
 			return nil, ASRTaskFailed
 		}
 		time.Sleep(time.Duration(queryInterval) * time.Second)
@@ -175,11 +176,11 @@ func (t *FileAsrTask) buildSubmit() *Submit {
 
 func (t *FileAsrTask) buildHeader() http.Header {
 	return http.Header{
-		"X-Api-App-Key":      []string{config.GetConfig().ASR.AppKey},
-		"X-Api-Access-Token": []string{config.GetConfig().ASR.AccessKey},
-		"X-Api-Resource-Id":  []string{"volc.bigasr.auc"},
-		"X-Api-Request-Id":   []string{t.Uid},
-		"X-Api-Sequence":     []string{"-1"},
+		"X-Api-App-Key":     []string{config.GetConfig().ASR.AppKey},
+		"X-Api-Access-Key":  []string{config.GetConfig().ASR.AccessKey},
+		"X-Api-Resource-Id": []string{"volc.bigasr.auc"},
+		"X-Api-Request-Id":  []string{t.Uid},
+		"X-Api-Sequence":    []string{"-1"},
 	}
 }
 

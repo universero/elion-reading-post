@@ -34,7 +34,7 @@ type Config struct {
 func GetConfig() *Config {
 	once.Do(func() {
 		c := new(Config)
-		if err := conf.Load("etc/config.yaml", c); err != nil {
+		if err := conf.Load("D:\\Projects\\xhpolaris\\elion-reading-post\\etc\\config.yaml", c); err != nil {
 			panic("get config error:" + err.Error())
 		}
 		if err := c.SetUp(); err != nil {

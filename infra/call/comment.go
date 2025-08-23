@@ -16,6 +16,7 @@ import (
 func init() {
 	var err error
 	if commentModel, err = deepseek.NewChatModel(nil, &deepseek.ChatModelConfig{
+		Model:   "deepseek-v3-250324",
 		APIKey:  config.GetConfig().Comment.ApiKey,
 		BaseURL: config.GetConfig().Comment.BaseURL,
 	}); err != nil {
@@ -53,6 +54,7 @@ func (t *CommentTask) Submit() (ok bool, err error) {
 		return false, err
 	}
 	if t.resp, err = commentModel.Generate(context.Background(), msgs); err != nil {
+		logx.Errorf("[comment] generate err:%v", err)
 		return false, err
 	}
 	return true, nil
@@ -60,12 +62,9 @@ func (t *CommentTask) Submit() (ok bool, err error) {
 
 // Query 获取评价结果
 func (t *CommentTask) Query() (string, error) {
-	if reasoning, ok := deepseek.GetReasoningContent(t.resp); ok {
-		logx.Info("[comment task] id: %d comment success | Tokens used: %d (prompt) + %d (completion) = %d (total)",
-			t.id, t.resp.ResponseMeta.Usage.PromptTokens, t.resp.ResponseMeta.Usage.CompletionTokens, t.resp.ResponseMeta.Usage.TotalTokens)
-		return reasoning, nil
-	}
-	return "", NoReasoning
+	logx.Infof("[comment task] id: %d comment success | Tokens used: %d (prompt) + %d (completion) = %d (total)",
+		t.id, t.resp.ResponseMeta.Usage.PromptTokens, t.resp.ResponseMeta.Usage.CompletionTokens, t.resp.ResponseMeta.Usage.TotalTokens)
+	return t.resp.Content, nil
 }
 
 // similarity 计算朗读文本与原文的相似度
@@ -180,7 +179,7 @@ func formatInfos(origin, reading string, result map[string]any) map[string]any {
 	builder.WriteString(fmt.Sprintf("相似度: %.2f%%\n", result["相似度"]))
 	builder.WriteString(fmt.Sprintf("编辑距离: %d\n", result["编辑距离"]))
 	builder.WriteString(fmt.Sprintf("原文长度: %d 字符\n", result["原文长度"]))
-	builder.WriteString(fmt.Sprintf("朗读长度: %d 字符\n\n", result["朗读长度"]))
+	builder.WriteString(fmt.Sprintf("朗读长度: %d 字符\n", result["朗读长度"]))
 	// 错误分析
 	if e, ok := result["错误分析"].(map[string]int); ok {
 		if len(e) == 0 {
@@ -191,5 +190,5 @@ func formatInfos(origin, reading string, result map[string]any) map[string]any {
 			}
 		}
 	}
-	return map[string]any{"origin": origin, "reading": reading, "e": builder.String()}
+	return map[string]any{"origin": origin, "reading": reading, "info": builder.String()}
 }

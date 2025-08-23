@@ -38,8 +38,8 @@ type (
 		Origin           string    // 原文 TODO 原文查询
 	}
 	FindOriginResult struct {
-		QuestionId   int    `gorm:"column:question_id"`
-		OriginalText string `gorm:"column:content"`
+		QuestionId string `gorm:"column:question_id"`
+		Origin     string `gorm:"column:content"`
 	}
 	AnswerMapper struct {
 		db *gorm.DB
@@ -108,12 +108,12 @@ func (m *AnswerMapper) ListUnHandledAnswers(ctx context.Context, size int) ([]*A
 			return fmt.Errorf("获取到的未处理记录标记更新中失败")
 		}
 		// 收集问题id
-		var question2origin map[string]string
+		questionSet := make(map[string]struct{})
 		var question []string
 		for _, answer := range answers {
-			question2origin[answer.QuestionID] = ""
+			questionSet[answer.QuestionID] = struct{}{}
 		}
-		for key := range question2origin {
+		for key := range questionSet {
 			question = append(question, key)
 		}
 		// 根据questions_id查询homework_id, 根据homework_id查询reference_reading_id, 根据reference_reading_id查询原文
@@ -121,14 +121,18 @@ func (m *AnswerMapper) ListUnHandledAnswers(ctx context.Context, size int) ([]*A
 		if err = tx.WithContext(ctx).Table(Question2Homework).
 			Select(fmt.Sprintf("%s.question_id, %s.content", Question2Homework, Text2Origin)).
 			Joins(fmt.Sprintf("JOIN %s ON %s.homework_id = %s.homework_id", Homework2Reading, Question2Homework, Homework2Reading)).
-			Joins(fmt.Sprintf("JOIN %s ON %s.reading_id = %s.reading_id", Reading2Text, Homework2Reading, Reading2Text)).
+			Joins(fmt.Sprintf("JOIN %s ON %s.reference_reading_id = %s.reading_id", Reading2Text, Homework2Reading, Reading2Text)).
 			Joins(fmt.Sprintf("JOIN %s ON %s.text_id = %s.text_id", Text2Origin, Reading2Text, Text2Origin)).
 			Where(fmt.Sprintf("%s.question_id IN ?", Question2Homework), question). // optimize 课外的题目可能没有文本
 			Scan(&origins).Error; err != nil {
 			return err
 		}
+		question2Origin := make(map[string]string)
+		for _, origin := range origins {
+			question2Origin[origin.QuestionId] = origin.Origin
+		}
 		for _, answer := range answers {
-			answer.Origin = question2origin[answer.QuestionID]
+			answer.Origin = question2Origin[answer.QuestionID]
 		}
 		return err
 	})

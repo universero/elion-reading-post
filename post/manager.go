@@ -64,7 +64,14 @@ var (
 // GetManager 创建管理者
 func GetManager(cap int) *Manager {
 	once.Do(func() {
-		m := &Manager{mu: sync.Mutex{}, cap: cap, mapper: mapper.GetAnswerMapper()}
+		m := &Manager{mu: sync.Mutex{}, cap: cap, mapper: mapper.GetAnswerMapper(),
+			resetTicker: time.NewTicker(time.Duration(resetInterval) * time.Second),
+			idle:        make(map[int]*Entry),
+			consuming:   make(map[int]*Entry),
+			abandon:     make(map[int]*Entry),
+			cache:       make(map[int]string),
+			asr:         make(map[int]*call.ASRTaskResp),
+		}
 		for range cap {
 			m.consumers = append(m.consumers, NewConsumer(m))
 		}
@@ -102,10 +109,13 @@ func (m *Manager) Reset() {
 
 // RequestOne 消费者通过这个获取一个未消费的记录
 func (m *Manager) RequestOne() (en *Entry) {
-	for en = m.oneIdle(); en == nil; {
+	for {
+		en = m.oneIdle()
+		if en != nil {
+			return en
+		}
 		m.fetchNewBatch() // 等待从数据库中获取
 	}
-	return en
 }
 
 // oneIdle 分配一个idle的Entry
@@ -161,6 +171,7 @@ func (m *Manager) fetch() error {
 		defer m.mu.Unlock()
 		for _, v := range ans {
 			NewEntry(v).Idle(m)
+			logx.Info("[manager] fetch %d as Idle", v.ID)
 		}
 		return nil
 	}

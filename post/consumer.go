@@ -8,8 +8,8 @@ import (
 )
 
 var (
-	format  = "raw" // TODO 需要确定音频模式
-	codec   = "raw"
+	format  = "mp3"
+	codec   = "opus"
 	rate    = 16000
 	bits    = 16
 	channel = 1
