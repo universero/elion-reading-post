@@ -34,6 +34,7 @@ type (
 		AudioTime        int       `gorm:"column:audio_time" json:"audio_time"`
 		AudioContentType string    `gorm:"column:audio_content_type;size:255" json:"audio_content_type"`
 		AudioStatus      int       `gorm:"column:audio_status" json:"audio_status"`
+		HandleTime       time.Time `gorm:"column:handle_time" json:"handle_time"`
 		Origin           string    // 原文 TODO 原文查询
 	}
 	FindOriginResult struct {
@@ -83,7 +84,7 @@ func (m *AnswerMapper) ListUnHandledAnswers(ctx context.Context, size int) ([]*A
 	var answers = make([]*Answer, 0)
 	err := m.db.Transaction(func(tx *gorm.DB) (err error) {
 		// 获取未处理的记录, 先处理提交早的
-		find := tx.WithContext(ctx).Where(UnHandledCond).Order("submitted_time ASC").Limit(size).Find(&answers)
+		find := tx.WithContext(ctx).Where(UnHandledCond).Where("audio IS NOT NULL AND audio != ''").Order("submitted_time ASC").Limit(size).Find(&answers)
 		if find.Error != nil && !errors.Is(find.Error, gorm.ErrRecordNotFound) { // 查询失败
 			return find.Error
 		} else if len(answers) == 0 { // 未查询到
@@ -97,7 +98,10 @@ func (m *AnswerMapper) ListUnHandledAnswers(ctx context.Context, size int) ([]*A
 		}
 
 		// 将获取的记录都标记为处理中
-		updates := tx.WithContext(ctx).Model(&Answer{}).Where("id IN ? AND audio_status = ?", ids, UnHandled).Updates(Handling)
+		updates := tx.WithContext(ctx).Model(&Answer{}).Where("id IN ? AND audio_status = ?", ids, UnHandled).Updates(map[string]any{
+			"audio_status": Handling,
+			"handle_time":  time.Now(),
+		})
 		if updates.Error != nil {
 			return updates.Error
 		} else if updates.RowsAffected != int64(len(ids)) {
@@ -148,6 +152,7 @@ func (m *AnswerMapper) FinishOne(ctx context.Context, id int, comment string) (s
 		update := tx.Model(&Answer{}).Where("id = ? AND audio_status = ?", id, Handling).Updates(&Answer{
 			AudioStatus: Handled,
 			Comment:     comment,
+			HandleTime:  time.Now(),
 		})
 		if update.Error != nil {
 			logx.Error("更新id:%d失败:err", id, update.Error.Error())
@@ -159,6 +164,20 @@ func (m *AnswerMapper) FinishOne(ctx context.Context, id int, comment string) (s
 		return nil
 	})
 	return success, err
+}
+
+func (m *AnswerMapper) Reset(ctx context.Context, exclude []int) (err error) {
+	expire := time.Now().Add(time.Duration(config.GetConfig().Expire) * time.Second)
+	db := m.db.WithContext(ctx).Model(&Answer{}).
+		Where("audio_status = ?", Handling).
+		Where("handle_time < ?", expire)
+
+	if len(exclude) > 0 {
+		db = db.Where("id NOT IN ?", exclude)
+	}
+
+	result := db.Updates(map[string]any{"audio_status": UnHandled, "handle_time": time.Now()})
+	return result.Error
 }
 
 func (a Answer) TableName() string {

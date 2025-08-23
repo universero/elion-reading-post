@@ -16,17 +16,17 @@ type (
 	ConsumeState string // 消费状态
 	// Manager 管理 Consumer的创建与销毁 TODO 多次失败的任务
 	Manager struct {
-		mu        sync.Mutex                // 维护manager状态
-		fetchCond *sync.Cond                // 只有一个线程实际查数据库
-		mapper    *mapper.AnswerMapper      // 数据库mapper
-		cap       int                       // 消费者数量
-		consumers []*Consumer               // 消费者
-		idle      map[int]*Entry            // idle的Entry
-		consuming map[int]*Entry            // 消费中的Entry
-		abandon   map[int]*Entry            // 放弃的Entry
-		cache     map[int]string            // 缓存id对应的comment
-		asr       map[int]*call.ASRTaskResp // 缓存id对应的asr结果
-		sf        singleflight.Group
+		mu          sync.Mutex                // 维护manager状态
+		mapper      *mapper.AnswerMapper      // 数据库mapper
+		resetTicker *time.Ticker              // 重置计时器
+		cap         int                       // 消费者数量
+		consumers   []*Consumer               // 消费者
+		idle        map[int]*Entry            // idle的Entry
+		consuming   map[int]*Entry            // 消费中的Entry
+		abandon     map[int]*Entry            // 放弃的Entry
+		cache       map[int]string            // 缓存id对应的comment
+		asr         map[int]*call.ASRTaskResp // 缓存id对应的asr结果
+		sf          singleflight.Group
 	}
 	Entry struct {
 		ID           int            // 记录ID
@@ -43,6 +43,7 @@ var (
 	Abandoned     ConsumeState = "abandoned"                // 放弃
 	NeedToWait                 = errors.New("暂时无新记录, 需要等待") // 标识等待的异常
 	batch                      = 10                         // 一次取出的个数
+	resetInterval              = 180                        // reset间隔
 	fetchInterval              = 60                         // fetch间隔
 	maxAbandon                 = 5                          // 最多放弃五次
 	opts                       = []retry.Option{            // 重试策略
@@ -63,10 +64,11 @@ var (
 // GetManager 创建管理者
 func GetManager(cap int) *Manager {
 	once.Do(func() {
-		m := &Manager{mu: sync.Mutex{}, fetchCond: sync.NewCond(&sync.Mutex{}), cap: cap, mapper: mapper.GetAnswerMapper()}
+		m := &Manager{mu: sync.Mutex{}, cap: cap, mapper: mapper.GetAnswerMapper()}
 		for range cap {
 			m.consumers = append(m.consumers, NewConsumer(m))
 		}
+		m.resetTicker = time.NewTicker(time.Duration(resetInterval) * time.Second)
 		manager = m
 	})
 	return manager
@@ -76,6 +78,25 @@ func GetManager(cap int) *Manager {
 func (m *Manager) Run() {
 	for _, c := range m.consumers {
 		c.Consume()
+	}
+	go manager.Reset()
+}
+
+// Reset 定期重置无效的数据
+func (m *Manager) Reset() {
+	for range m.resetTicker.C {
+		m.mu.Lock()
+		var exclude []int
+		if len(m.abandon) > 0 {
+			for id := range m.abandon {
+				exclude = append(exclude, id)
+			}
+		}
+		m.mu.Unlock()
+		if err := m.mapper.Reset(context.Background(), exclude); err != nil {
+			logx.Error("[manager] reset err:%v", err)
+		}
+		m.resetTicker.Reset(time.Duration(resetInterval) * time.Second)
 	}
 }
 

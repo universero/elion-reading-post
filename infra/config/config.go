@@ -28,6 +28,7 @@ type Config struct {
 		BaseURL   string
 	}
 	Consumers int
+	Expire    int
 }
 
 func GetConfig() *Config {
